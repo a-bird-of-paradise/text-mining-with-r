@@ -1,0 +1,144 @@
+---
+title: "Text Mining with R"
+author: "myself"
+date: '`r Sys.Date()`'
+output: 
+  html_document:
+    keep_md: true
+    self_contained: true
+---
+
+# Text Mining with R
+
+In this repo I log what I am doing working through this book. I hope you enjoy it. 
+
+First let's load some packages.
+
+```{r}
+library(tidyverse)
+library(tidytext)
+library(janeaustenr)
+library(scales)
+data(stop_words)
+```
+
+## Chapter 1
+
+Let's have a look at which of Ms. Austen's words are her favourites. 
+
+```{r}
+tidy_books <- janeaustenr::austen_books() %>%
+  group_by(book) %>%
+  mutate(line_number = row_number(),
+         chapter = cumsum(str_detect(text,
+                                     regex("^chapter [\\divxlc]",
+                                    ignore_case = TRUE)))) %>%
+  ungroup %>%
+  tidytext::unnest_tokens(word,text) %>%
+  anti_join(stop_words, by = "word")
+
+tidy_books %>%
+  count(word,sort = TRUE)
+```
+OK. So the tidy text package includes a function `unnest_tokens()` which is essentially the venerable `Flex` package from `C/C++` but in `R`. Interesting to note that a regex is used to identify chapter headings (again, this is just flex, literally could do this with a DFA). 
+
+ANYWAY.
+
+Let's plot it: 
+
+```{r}
+  tidy_books %>%
+  count(word,sort = TRUE) %>%
+  filter(n > 600) %>%
+  mutate(word = reorder(word,n)) %>%
+  ggplot(aes(x = word, y = n)) +
+  geom_col() +
+  xlab(NULL) +
+  coord_flip()
+```
+
+OK. Now move on to someone other than Jane Austen. 
+
+```{r}
+# devtools::install_github("ropensci/gutenbergr")
+# LOL managed to get themselves banned from CRAN
+library(gutenbergr)
+
+hgwells <- gutenbergr::gutenberg_download(c(35,36,5230,159))
+
+tidy_hgwells <- hgwells %>%
+  tidytext::unnest_tokens(word,text) %>%
+  anti_join(stop_words, by = "word")
+
+tidy_hgwells %>% count(word,sort = TRUE)
+```
+
+OK. Now what about the Brontë sisters? 
+
+```{r}
+bronte <- gutenbergr::gutenberg_download(c(1260,768,969,9182,767))
+
+tidy_bronte <- bronte %>%
+  tidytext::unnest_tokens(word, text) %>%
+  anti_join(stop_words, by = "word")
+
+tidy_bronte %>% 
+  count(word, sort = TRUE)
+```
+Right. Lets look for common and also distinctive words for these three authors. I'm also going to grab some of Jules Verne.
+```{r}
+verne <- gutenbergr::gutenberg_download(c(164,103,18857))
+
+tidy_verne <- verne %>%
+  tidytext::unnest_tokens(word, text) %>%
+  anti_join(stop_words, by = "word")
+
+frequency <- 
+  tidy_bronte %>% mutate(author = 'Brontë sisters') %>%
+  bind_rows(tidy_hgwells %>% mutate(author = 'H G Wells')) %>%
+  bind_rows(tidy_books %>% mutate(author = 'Jane Austen')) %>%
+  bind_rows(tidy_verne %>% mutate(author = 'Jules Verne')) %>%
+  mutate(word = str_extract(word, '[a-z]+')) %>%
+  count(author,word) %>%
+  group_by(author) %>%
+  mutate(proportion = n / sum(n)) %>%
+  select(-n) %>%
+  spread(key = author, value = proportion) %>%
+  gather(key = author, value = proportion, `H G Wells`,`Brontë sisters`,`Jules Verne`)
+
+frequency %>% 
+  ggplot(aes(x = proportion, y = `Jane Austen`), color = abs(`Jane Austen`-author)) +
+  geom_abline(colour = 'gray40', lty = 2) + 
+  geom_jitter(alpha = 0.1, size = 2.5, width = 0.3, height = 0.3) + 
+  geom_text(aes(label=word), check_overlap = TRUE, vjust = 1.5) + 
+  scale_x_log10(labels = scales::percent_format()) + 
+  scale_y_log10(labels = scales::percent_format()) +
+  facet_wrap( ~ author) + 
+  scale_colour_gradient(limits = c(0,0.001), 
+                        low = 'darkslategray4', high = 'gray75') +
+  theme(legend.position = 'none') + 
+  labs(y = 'Jane Austen', x= NULL)
+```
+
+OK. Now what about some correlations? 
+```{r}
+frequency %>% 
+  spread(key = author, value = proportion) %>%
+  select(-word) %>%
+  cor(use = 'pairwise.complete.obs')
+```
+Interestingly, the only of these authors I can actually enjoy reading (Mr Verne) is most unlike everyone else. 
+
+Using `pairwise.complete.obs` can be tricky but in this case it is OK. If Jane and Jules use a word that noone else does then it is meaningful. I could fill in NAs with zeroes perhaps. Let's try. 
+
+```{r}
+frequency %>%
+  spread(key = author, value = proportion) %>%
+  gather(key = author, value = proportion, -word) %>%
+  mutate(proportion = ifelse(is.na(proportion),0,proportion)) %>%
+  spread(key = author, value = proportion) %>%
+  select(-word) %>%
+  cor
+```
+
+So this is relatively interesting. You can infer how many words of these individual authors are unique to their lexicon versus the others by looking at the drop from pairwise complete to putting in zeroes. 
